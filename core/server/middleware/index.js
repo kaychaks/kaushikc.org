@@ -4,14 +4,20 @@
 
 var api         = require('../api'),
     BSStore     = require('../bookshelf-session'),
+    bodyParser  = require('body-parser'),
     config      = require('../config'),
-    errors      = require('../errorHandling'),
+    cookieParser = require('cookie-parser'),
+    errors      = require('../errors'),
     express     = require('express'),
+    favicon     = require('static-favicon'),
     fs          = require('fs'),
     hbs         = require('express-hbs'),
+    logger      = require('morgan'),
     middleware  = require('./middleware'),
     packageInfo = require('../../../package.json'),
     path        = require('path'),
+    routes      = require('../routes'),
+    session     = require('express-session'),
     slashes     = require('connect-slashes'),
     storage     = require('../storage'),
     url         = require('url'),
@@ -39,11 +45,11 @@ function ghostLocals(req, res, next) {
     if (res.isAdmin) {
         res.locals.csrfToken = req.csrfToken();
         when.all([
-            api.users.read({id: req.session.user}),
+            api.users.read({id: req.session.user}, {context: {user: req.session.user}}),
             api.notifications.browse()
         ]).then(function (values) {
-            var currentUser = values[0],
-                notifications = values[1];
+            var currentUser = values[0].users[0],
+                notifications = values[1].notifications;
 
             _.extend(res.locals,  {
                 currentUser: {
@@ -56,9 +62,10 @@ function ghostLocals(req, res, next) {
             next();
         }).otherwise(function () {
             // Only show passive notifications
+            // ToDo: Remove once ember handles passive notifications.
             api.notifications.browse().then(function (notifications) {
                 _.extend(res.locals, {
-                    messages: _.reject(notifications, function (notification) {
+                    messages: _.reject(notifications.notifications, function (notification) {
                         return notification.status !== 'passive';
                     })
                 });
@@ -70,40 +77,24 @@ function ghostLocals(req, res, next) {
     }
 }
 
-// ### InitViews Middleware
-// Initialise Theme or Admin Views
-function initViews(req, res, next) {
-    /*jslint unparam:true*/
-
-    if (!res.isAdmin) {
-        hbs.updateTemplateOptions({ data: {blog: config.theme()} });
-        expressServer.engine('hbs', expressServer.get('theme view engine'));
-        expressServer.set('views', path.join(config().paths.themePath, expressServer.get('activeTheme')));
-    } else {
-        expressServer.engine('hbs', expressServer.get('admin view engine'));
-        expressServer.set('views', config().paths.adminViews);
+function initThemeData(secure) {
+    var themeConfig = config.theme();
+    if (secure && config().urlSSL) {
+        // For secure requests override .url property with the SSL version
+        themeConfig = _.clone(themeConfig);
+        themeConfig.url = config().urlSSL.replace(/\/$/, '');
     }
-
-    next();
+    return themeConfig;
 }
 
 // ### Activate Theme
 // Helper for manageAdminAndTheme
 function activateTheme(activeTheme) {
     var hbsOptions,
-        themePartials = path.join(config().paths.themePath, activeTheme, 'partials'),
-        stackLocation = _.indexOf(expressServer.stack, _.find(expressServer.stack, function (stackItem) {
-            return stackItem.route === config().paths.subdir && stackItem.handle.name === 'settingEnabled';
-        }));
+        themePartials = path.join(config().paths.themePath, activeTheme, 'partials');
 
     // clear the view cache
     expressServer.cache = {};
-    expressServer.disable(expressServer.get('activeTheme'));
-    expressServer.set('activeTheme', activeTheme);
-    expressServer.enable(expressServer.get('activeTheme'));
-    if (stackLocation) {
-        expressServer.stack[stackLocation].handle = middleware.whenEnabled(expressServer.get('activeTheme'), middleware.staticTheme());
-    }
 
     // set view engine
     hbsOptions = { partialsDir: [ config().paths.helperTemplates ] };
@@ -118,23 +109,44 @@ function activateTheme(activeTheme) {
     expressServer.set('theme view engine', hbs.express3(hbsOptions));
 
     // Update user error template
-    errors.updateActiveTheme(activeTheme, config().paths.availableThemes[activeTheme].hasOwnProperty('error'));
+    errors.updateActiveTheme(activeTheme);
+
+    // Set active theme variable on the express server
+    expressServer.set('activeTheme', activeTheme);
 }
 
- // ### ManageAdminAndTheme Middleware
+// ### decideContext Middleware
 // Uses the URL to detect whether this response should be an admin response
 // This is used to ensure the right content is served, and is not for security purposes
-function manageAdminAndTheme(req, res, next) {
+function decideContext(req, res, next) {
     res.isAdmin = req.url.lastIndexOf(config().paths.subdir + '/ghost/', 0) === 0;
 
     if (res.isAdmin) {
         expressServer.enable('admin');
-        expressServer.disable(expressServer.get('activeTheme'));
+        expressServer.engine('hbs', expressServer.get('admin view engine'));
+        expressServer.set('views', config().paths.adminViews);
     } else {
-        expressServer.enable(expressServer.get('activeTheme'));
         expressServer.disable('admin');
+        var themeData = initThemeData(req.secure);
+        hbs.updateTemplateOptions({ data: {blog: themeData} });
+        expressServer.engine('hbs', expressServer.get('theme view engine'));
+        expressServer.set('views', path.join(config().paths.themePath, expressServer.get('activeTheme')));
     }
-    api.settings.read('activeTheme').then(function (activeTheme) {
+
+    // Pass 'secure' flag to the view engine
+    // so that templates can choose 'url' vs 'urlSSL'
+    res.locals.secure = req.secure;
+
+    next();
+}
+
+// ### updateActiveTheme
+// Updates the expressServer's activeTheme variable and subsequently
+// activates that theme's views with the hbs templating engine if it
+// is not yet activated.
+function updateActiveTheme(req, res, next) {
+    api.settings.read({context: {internal: true}, key: 'activeTheme'}).then(function (response) {
+        var activeTheme = response.settings[0];
         // Check if the theme changed
         if (activeTheme.value !== expressServer.get('activeTheme')) {
             // Change theme
@@ -159,8 +171,18 @@ function manageAdminAndTheme(req, res, next) {
 // Redirect to signup if no users are currently created
 function redirectToSignup(req, res, next) {
     /*jslint unparam:true*/
-    api.users.browse().then(function (users) {
-        if (users.length === 0) {
+
+    api.users.doesUserExist().then(function (exists) {
+        if (!exists) {
+            // TODO remove this when ember admin becomes the default
+            if (req.path.match(/\/ember\//)) {
+                if (!req.path.match(/\/ghost\/ember\/signup\//)) {
+                    return res.redirect(config().paths.subdir + '/ghost/ember/signup/');
+                } else {
+                    return next();
+                }
+            }
+            // END remove this
             return res.redirect(config().paths.subdir + '/ghost/signup/');
         }
         next();
@@ -183,9 +205,20 @@ function isSSLrequired(isAdmin) {
 function checkSSL(req, res, next) {
     if (isSSLrequired(res.isAdmin)) {
         if (!req.secure) {
+            var forceAdminSSL = config().forceAdminSSL,
+                redirectUrl;
+
+            // Check if forceAdminSSL: { redirect: false } is set, which means
+            // we should just deny non-SSL access rather than redirect
+            if (forceAdminSSL && forceAdminSSL.redirect !== undefined && !forceAdminSSL.redirect) {
+                return res.send(403);
+            }
+
+            redirectUrl = url.parse(config().urlSSL || config().url);
             return res.redirect(301, url.format({
                 protocol: 'https:',
-                hostname: url.parse(config().url).hostname,
+                hostname: redirectUrl.hostname,
+                port: redirectUrl.port,
                 pathname: req.path,
                 query: req.query
             }));
@@ -210,7 +243,7 @@ function robots() {
                     if (err) {
                         return next(err);
                     }
-                    
+
                     content = {
                         headers: {
                             'Content-Type': 'text/plain',
@@ -246,14 +279,14 @@ module.exports = function (server, dbHash) {
     // Logging configuration
     if (logging !== false) {
         if (expressServer.get('env') !== 'development') {
-            expressServer.use(express.logger(logging || {}));
+            expressServer.use(logger(logging || {}));
         } else {
-            expressServer.use(express.logger(logging || 'dev'));
+            expressServer.use(logger(logging || 'dev'));
         }
     }
 
     // Favicon
-    expressServer.use(subdir, express.favicon(corePath + '/shared/favicon.ico'));
+    expressServer.use(subdir, favicon(corePath + '/shared/favicon.ico'));
 
     // Static assets
     expressServer.use(subdir + '/shared', express['static'](path.join(corePath, '/shared'), {maxAge: ONE_HOUR_MS}));
@@ -262,10 +295,12 @@ module.exports = function (server, dbHash) {
     expressServer.use(subdir + '/public', express['static'](path.join(corePath, '/built/public'), {maxAge: ONE_YEAR_MS}));
 
     // First determine whether we're serving admin or theme content
-    expressServer.use(manageAdminAndTheme);
+    expressServer.use(updateActiveTheme);
+    expressServer.use(decideContext);
 
     // Admin only config
-    expressServer.use(subdir + '/ghost', middleware.whenEnabled('admin', express['static'](path.join(corePath, '/client/assets'), {maxAge: ONE_YEAR_MS})));
+    expressServer.use(subdir + '/ghost', middleware.whenEnabled('admin', express['static'](path.join(corePath, '/clientold/assets'), {maxAge: ONE_YEAR_MS})));
+    expressServer.use(subdir + '/ghost/ember', middleware.whenEnabled('admin', express['static'](path.join(corePath, '/client/assets'), {maxAge: ONE_YEAR_MS})));
 
     // Force SSL
     // NOTE: Importantly this is _after_ the check above for admin-theme static resources,
@@ -274,7 +309,7 @@ module.exports = function (server, dbHash) {
     expressServer.use(checkSSL);
 
     // Theme only config
-    expressServer.use(subdir, middleware.whenEnabled(expressServer.get('activeTheme'), middleware.staticTheme()));
+    expressServer.use(subdir, middleware.staticTheme());
 
     // Serve robots.txt if not found in theme
     expressServer.use(robots());
@@ -283,8 +318,8 @@ module.exports = function (server, dbHash) {
     expressServer.use(slashes(true, {headers: {'Cache-Control': 'public, max-age=' + ONE_YEAR_S}}));
 
     // Body parsing
-    expressServer.use(express.json());
-    expressServer.use(express.urlencoded());
+    expressServer.use(bodyParser.json());
+    expressServer.use(bodyParser.urlencoded());
 
     // ### Sessions
     // we need the trailing slash in the cookie path. Session handling *must* be after the slash handling
@@ -299,8 +334,8 @@ module.exports = function (server, dbHash) {
         cookie.secure = true;
     }
 
-    expressServer.use(express.cookieParser());
-    expressServer.use(express.session({
+    expressServer.use(cookieParser());
+    expressServer.use(session({
         store: new BSStore(),
         proxy: true,
         secret: dbHash,
@@ -312,6 +347,7 @@ module.exports = function (server, dbHash) {
     expressServer.use(subdir + '/api/', middleware.cacheControl('private'));
     expressServer.use(subdir + '/ghost/', middleware.cacheControl('private'));
 
+
     // enable authentication; has to be done before CSRF handling
     expressServer.use(middleware.authenticate);
 
@@ -320,13 +356,20 @@ module.exports = function (server, dbHash) {
 
     // local data
     expressServer.use(ghostLocals);
+
     // So on every request we actually clean out redundant passive notifications from the server side
+    // ToDo: Remove when ember handles passive notifications.
     expressServer.use(middleware.cleanNotifications);
-     // Initialise the views
-    expressServer.use(initViews);
 
     // ### Routing
-    expressServer.use(subdir, expressServer.router);
+    // Set up API routes
+    expressServer.use(subdir, routes.api(middleware));
+
+    // Set up Admin routes
+    expressServer.use(subdir, routes.admin(middleware));
+
+    // Set up Frontend routes
+    expressServer.use(subdir, routes.frontend());
 
     // ### Error handling
     // 404 Handler
