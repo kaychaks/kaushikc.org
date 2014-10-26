@@ -4,65 +4,194 @@ import SlugGenerator from 'ghost/models/slug-generator';
 import boundOneWay from 'ghost/utils/bound-one-way';
 
 var PostSettingsMenuController = Ember.ObjectController.extend({
-    init: function () {
-        this._super();
+    //State for if the user is viewing a tab's pane.
+    needs: 'application',
 
-        // when creating a new post we want to observe the title
-        // to generate the post's slug
-        if (this.get('isNew')) {
-            this.addObserver('title', this, 'titleObserver');
+    lastPromise: null,
+
+    isViewingSubview: Ember.computed('controllers.application.showSettingsMenu', function (key, value) {
+        // Not viewing a subview if we can't even see the PSM
+        if (!this.get('controllers.application.showSettingsMenu')) {
+            return false;
         }
-    },
-    isStaticPage: function (key, val) {
+        if (arguments.length > 1) {
+            return value;
+        }
+        return false;
+    }),
+    selectedAuthor: null,
+    initializeSelectedAuthor: function () {
         var self = this;
 
-        if (arguments.length > 1) {
-            this.set('page', val);
+        return this.get('author').then(function (author) {
+            self.set('selectedAuthor', author);
+            return author;
+        });
+    }.observes('model'),
 
-            return this.get('model').save().then(function () {
-                self.notifications.showSuccess('Successfully converted to ' + (val ? 'static page' : 'post'));
+    changeAuthor: function () {
+        var author = this.get('author'),
+            selectedAuthor = this.get('selectedAuthor'),
+            model = this.get('model'),
+            self = this;
+        //return if nothing changed
+        if (selectedAuthor.get('id') === author.get('id')) {
+            return;
+        }
+        model.set('author', selectedAuthor);
 
-                return self.get('page');
-            }, function (errors) {
-                self.notifications.showErrors(errors);
-            });
+        //if this is a new post (never been saved before), don't try to save it
+        if (this.get('isNew')) {
+            return;
         }
 
-        return this.get('page');
-    }.property('page'),
+        model.save().catch(function (errors) {
+            self.showErrors(errors);
+            self.set('selectedAuthor', author);
+            model.rollback();
+        });
+    }.observes('selectedAuthor'),
+    authors: Ember.computed(function () {
+        //Loaded asynchronously, so must use promise proxies.
+        var deferred = {};
+
+        deferred.promise = this.store.find('user', {limit: 'all'}).then(function (users) {
+            return users.rejectBy('id', 'me').sortBy('name');
+        }).then(function (users) {
+            return users.filter(function (user) {
+                return user.get('active');
+            });
+        });
+
+        return Ember.ArrayProxy
+            .extend(Ember.PromiseProxyMixin)
+            .create(deferred);
+    }),
     /**
      * The placeholder is the published date of the post,
      * or the current date if the pubdate has not been set.
      */
-    publishedAtPlaceholder: function () {
+    publishedAtPlaceholder: Ember.computed('publishedAtValue', function () {
         var pubDate = this.get('published_at');
         if (pubDate) {
             return formatDate(pubDate);
         }
         return formatDate(moment());
-    }.property('publishedAtValue'),
+    }),
     publishedAtValue: boundOneWay('published_at', formatDate),
 
     slugValue: boundOneWay('slug'),
     //Lazy load the slug generator for slugPlaceholder
     slugGenerator: Ember.computed(function () {
-        return SlugGenerator.create({ghostPaths: this.get('ghostPaths')});
+        return SlugGenerator.create({
+            ghostPaths: this.get('ghostPaths'),
+            slugType: 'post'
+        });
     }),
     //Requests slug from title
-    generateSlugPlaceholder: function () {
+    generateAndSetSlug: function (destination) {
         var self = this,
-            slugGenerator = this.get('slugGenerator'),
-            title = this.get('title');
-        slugGenerator.generateSlug(title).then(function (slug) {
-            self.set('slugPlaceholder', slug);
-        });
-    },
-    titleObserver: function () {
-        if (this.get('isNew') && this.get('model').changedAttributes().hasOwnProperty('title')) {
-            Ember.run.debounce(this, 'generateSlugPlaceholder', 700);
+            title = this.get('titleScratch'),
+            afterSave = this.get('lastPromise'),
+            promise;
+
+        // Only set an "untitled" slug once per post
+        if (title === '(Untitled)' && this.get('slug')) {
+            return;
         }
+
+        promise = Ember.RSVP.resolve(afterSave).then(function () {
+            return self.get('slugGenerator').generateSlug(title).then(function (slug) {
+                self.set(destination, slug);
+            });
+        });
+
+        this.set('lastPromise', promise);
     },
-    slugPlaceholder: function (key, value) {
+
+    metaTitleScratch: boundOneWay('meta_title'),
+    metaDescriptionScratch: boundOneWay('meta_description'),
+
+    seoTitle: Ember.computed('titleScratch', 'metaTitleScratch', function () {
+        var metaTitle = this.get('metaTitleScratch') || '';
+
+        metaTitle = metaTitle.length > 0 ? metaTitle : this.get('titleScratch');
+
+        if (metaTitle.length > 70) {
+            metaTitle = metaTitle.substring(0, 70).trim();
+            metaTitle = Ember.Handlebars.Utils.escapeExpression(metaTitle);
+            metaTitle = new Ember.Handlebars.SafeString(metaTitle + '&hellip;');
+        }
+
+        return metaTitle;
+    }),
+
+    seoDescription: Ember.computed('scratch', 'metaDescriptionScratch', function () {
+        var metaDescription = this.get('metaDescriptionScratch') || '',
+            el,
+            html = '',
+            placeholder;
+
+        if (metaDescription.length > 0) {
+            placeholder = metaDescription;
+        } else {
+            el = $('.rendered-markdown');
+
+            // Get rendered markdown
+            if (!_.isUndefined(el) && el.length > 0) {
+                html = el.clone();
+                html.find('.image-uploader').remove();
+                html = html[0].innerHTML;
+            }
+
+            // Strip HTML
+            placeholder = $('<div />', { html: html }).text();
+            // Replace new lines and trim
+            placeholder = placeholder.replace(/\n+/g, ' ').trim();
+        }
+
+        if (placeholder.length > 156) {
+            // Limit to 156 characters
+            placeholder = placeholder.substring(0, 156).trim();
+            placeholder = Ember.Handlebars.Utils.escapeExpression(placeholder);
+            placeholder = new Ember.Handlebars.SafeString(placeholder + '&hellip;');
+        }
+
+        return placeholder;
+    }),
+
+    seoURL: Ember.computed('slug', 'slugPlaceholder', function () {
+        var blogUrl = this.get('config').blogUrl,
+            seoSlug = this.get('slug') ? this.get('slug') : this.get('slugPlaceholder'),
+            seoURL = blogUrl + '/' + seoSlug + '/';
+
+        if (seoURL.length > 70) {
+            seoURL = seoURL.substring(0, 70).trim();
+            seoURL = new Ember.Handlebars.SafeString(seoURL + '&hellip;');
+        }
+
+        return seoURL;
+    }),
+
+    // observe titleScratch, keeping the post's slug in sync
+    // with it until saved for the first time.
+    addTitleObserver: function () {
+        if (this.get('isNew') || this.get('title') === '(Untitled)') {
+            this.addObserver('titleScratch', this, 'titleObserver');
+        }
+    }.observes('model'),
+    titleObserver: function () {
+        var debounceId;
+
+        if (this.get('isNew') && !this.get('title')) {
+            debounceId = Ember.run.debounce(this, 'generateAndSetSlug', ['slugPlaceholder'], 700);
+        } else if (this.get('title') === '(Untitled)') {
+            debounceId = Ember.run.debounce(this, 'generateAndSetSlug', ['slug'], 700);
+        }
+
+        this.set('debounceId', debounceId);
+    },
+    slugPlaceholder: Ember.computed(function (key, value) {
         var slug = this.get('slug');
 
         //If the post has a slug, that's its placeholder.
@@ -76,10 +205,48 @@ var PostSettingsMenuController = Ember.ObjectController.extend({
             return value;
         }
         //The title will stand in until the actual slug has been generated
-        return this.get('title');
-    }.property(),
+        return this.get('titleScratch');
+    }),
 
+    showErrors: function (errors) {
+        errors = Ember.isArray(errors) ? errors : [errors];
+        this.notifications.showErrors(errors);
+    },
+    showSuccess: function (message) {
+        this.notifications.showSuccess(message);
+    },
     actions: {
+        togglePage: function () {
+            var self = this;
+
+            this.toggleProperty('page');
+            // If this is a new post.  Don't save the model.  Defer the save
+            // to the user pressing the save button
+            if (this.get('isNew')) {
+                return;
+            }
+
+            this.get('model').save().catch(function (errors) {
+                self.showErrors(errors);
+                self.get('model').rollback();
+            });
+        },
+
+        toggleFeatured: function () {
+            var self = this;
+
+            this.toggleProperty('featured');
+            // If this is a new post.  Don't save the model.  Defer the save
+            // to the user pressing the save button
+            if (this.get('isNew')) {
+                return;
+            }
+
+            this.get('model').save(this.get('saveOptions')).catch(function (errors) {
+                self.showErrors(errors);
+                self.get('model').rollback();
+            });
+        },
         /**
          * triggered by user manually changing slug
          */
@@ -89,10 +256,13 @@ var PostSettingsMenuController = Ember.ObjectController.extend({
 
             newSlug = newSlug || slug;
 
-            newSlug = newSlug.trim();
+            newSlug = newSlug && newSlug.trim();
 
             // Ignore unchanged slugs or candidate slugs that are empty
             if (!newSlug || slug === newSlug) {
+                // reset the input to its previous state
+                this.set('slugValue', slug);
+
                 return;
             }
 
@@ -117,14 +287,16 @@ var PostSettingsMenuController = Ember.ObjectController.extend({
                 // for the incrementor then the existing slug should be used
                 if (_.isNumber(check) && check > 0) {
                     if (slug === slugTokens.join('-') && serverSlug !== newSlug) {
+                        self.set('slugValue', slug);
+
                         return;
                     }
                 }
 
                 self.set('slug', serverSlug);
 
-                if (self.hasObserverFor('title')) {
-                    self.removeObserver('title', self, 'titleObserver');
+                if (self.hasObserverFor('titleScratch')) {
+                    self.removeObserver('titleScratch', self, 'titleObserver');
                 }
 
                 // If this is a new post.  Don't save the model.  Defer the save
@@ -133,13 +305,10 @@ var PostSettingsMenuController = Ember.ObjectController.extend({
                     return;
                 }
 
-                // Save post model properties excluding any changes to the post body
-                return self.get('model').save().then(function () {
-                    self.notifications.showSuccess('Permalink successfully changed to <strong>' +
-                        self.get('slug') + '</strong>.');
-                }, function (errors) {
-                    self.notifications.showErrors(errors);
-                });
+                return self.get('model').save();
+            }).catch(function (errors) {
+                self.showErrors(errors);
+                self.get('model').rollback();
             });
         },
 
@@ -162,37 +331,121 @@ var PostSettingsMenuController = Ember.ObjectController.extend({
                 return;
             }
 
-            // Do nothing if the user didn't actually change the date
-            if (publishedAt && publishedAt.isSame(newPublishedAt)) {
-                return;
-            }
-
             // Validate new Published date
             if (!newPublishedAt.isValid()) {
                 errMessage = 'Published Date must be a valid date with format: ' +
                     'DD MMM YY @ HH:mm (e.g. 6 Dec 14 @ 15:00)';
             }
-
-            //Can't publish in the future yet
             if (newPublishedAt.diff(new Date(), 'h') > 0) {
                 errMessage = 'Published Date cannot currently be in the future.';
             }
 
             //If errors, notify and exit.
             if (errMessage) {
-                this.notifications.showError(errMessage);
+                this.showErrors(errMessage);
+                return;
+            }
+
+            // Do nothing if the user didn't actually change the date
+            if (publishedAt && publishedAt.isSame(newPublishedAt)) {
                 return;
             }
 
             //Validation complete
             this.set('published_at', newPublishedAt);
 
-            this.get('model').save().then(function () {
-                self.notifications.showSuccess('Publish date successfully changed to <strong>' +
-                    formatDate(self.get('published_at')) + '</strong>.');
-            }, function (errors) {
-                self.notifications.showErrors(errors);
+            // If this is a new post.  Don't save the model.  Defer the save
+            // to the user pressing the save button
+            if (this.get('isNew')) {
+                return;
+            }
+
+            this.get('model').save().catch(function (errors) {
+                self.showErrors(errors);
+                self.get('model').rollback();
             });
+        },
+
+        setMetaTitle: function (metaTitle) {
+            var self = this,
+                currentTitle = this.get('meta_title') || '';
+
+            // Only update if the title has changed
+            if (currentTitle === metaTitle) {
+                return;
+            }
+
+            this.set('meta_title', metaTitle);
+
+            // If this is a new post.  Don't save the model.  Defer the save
+            // to the user pressing the save button
+            if (this.get('isNew')) {
+                return;
+            }
+
+            this.get('model').save().catch(function (errors) {
+                self.showErrors(errors);
+            });
+        },
+
+        setMetaDescription: function (metaDescription) {
+            var self = this,
+                currentDescription = this.get('meta_description') || '';
+
+            // Only update if the description has changed
+            if (currentDescription === metaDescription) {
+                return;
+            }
+
+            this.set('meta_description', metaDescription);
+
+            // If this is a new post.  Don't save the model.  Defer the save
+            // to the user pressing the save button
+            if (this.get('isNew')) {
+                return;
+            }
+
+            this.get('model').save().catch(function (errors) {
+                self.showErrors(errors);
+            });
+        },
+
+        setCoverImage: function (image) {
+            var self = this;
+
+            this.set('image', image);
+
+            if (this.get('isNew')) {
+                return;
+            }
+
+            this.get('model').save().catch(function (errors) {
+                self.showErrors(errors);
+                self.get('model').rollback();
+            });
+        },
+
+        clearCoverImage: function () {
+            var self = this;
+
+            this.set('image', '');
+
+            if (this.get('isNew')) {
+                return;
+            }
+
+            this.get('model').save().catch(function (errors) {
+                self.showErrors(errors);
+                self.get('model').rollback();
+            });
+        },
+
+        showSubview: function () {
+            this.set('isViewingSubview', true);
+        },
+
+        closeSubview: function () {
+            this.set('isViewingSubview', false);
         }
     }
 });

@@ -8,9 +8,9 @@ var DeletePostController = Ember.Controller.extend({
             model.updateTags();
 
             model.destroyRecord().then(function () {
-                self.get('popover').closePopovers();
-                self.notifications.showSuccess('Your post has been deleted.');
+                self.get('dropdown').closeDropdowns();
                 self.transitionToRoute('posts.index');
+                self.notifications.showSuccess('Your post has been deleted.', { delayed: true });
             }, function () {
                 self.notifications.showError('Your post could not be deleted. Please try again.');
             });
@@ -24,11 +24,11 @@ var DeletePostController = Ember.Controller.extend({
     confirm: {
         accept: {
             text: 'Delete',
-            buttonClass: 'button-delete'
+            buttonClass: 'btn btn-red'
         },
         reject: {
             text: 'Cancel',
-            buttonClass: 'button'
+            buttonClass: 'btn btn-default btn-minor'
         }
     }
 });

@@ -1,41 +1,89 @@
+/* global key */
 import ShortcutsRoute from 'ghost/mixins/shortcuts-route';
 
-var ApplicationRoute = Ember.Route.extend(ShortcutsRoute, {
-    shortcuts: {
-        'esc': 'closePopups'
+var ApplicationRoute = Ember.Route.extend(SimpleAuth.ApplicationRouteMixin, ShortcutsRoute, {
+
+    afterModel: function (model, transition) {
+        if (this.get('session').isAuthenticated) {
+            transition.send('loadServerNotifications');
+        }
     },
+
+    shortcuts: {
+        'esc': {action: 'closePopups', scope: 'all'},
+        'enter': {action: 'confirmModal', scope: 'modal'}
+    },
+
     actions: {
+        authorizationFailed: function () {
+            var currentRoute = this.get('controller').get('currentRouteName');
+
+            if (currentRoute.split('.')[0] === 'editor') {
+                this.send('openModal', 'auth-failed-unsaved', this.controllerFor(currentRoute));
+
+                return;
+            }
+
+            this._super();
+        },
+
+        toggleGlobalMobileNav: function () {
+            this.toggleProperty('controller.showGlobalMobileNav');
+        },
+
+        toggleSettingsMenu: function () {
+            this.toggleProperty('controller.showSettingsMenu');
+        },
+        closeSettingsMenu: function () {
+            this.set('controller.showSettingsMenu', false);
+        },
+
         closePopups: function () {
-            this.get('popover').closePopovers();
+            this.get('dropdown').closeDropdowns();
             this.get('notifications').closeAll();
-            // @todo close modals
-        },
-        signedIn: function (user) {
-            // Update the user on all routes and controllers
-            this.container.unregister('user:current');
-            this.container.register('user:current', user, { instantiate: false });
 
-            this.container.injection('route', 'user', 'user:current');
-            this.container.injection('controller', 'user', 'user:current');
+            // Close right outlet if open
+            this.send('closeSettingsMenu');
 
-            this.set('user', user);
-            this.set('controller.user', user);
+            this.send('closeModal');
         },
 
-        signedOut: function () {
-            // Nullify the user on all routes and controllers
-            this.container.unregister('user:current');
-            this.container.register('user:current', null, { instantiate: false });
+        signedIn: function () {
+            this.send('loadServerNotifications', true);
+        },
 
-            this.container.injection('route', 'user', 'user:current');
-            this.container.injection('controller', 'user', 'user:current');
+        sessionAuthenticationFailed: function (error) {
+            if (error.errors) {
+                this.notifications.showErrors(error.errors);
+            } else {
+                // connection errors don't return proper status message, only req.body
+                this.notifications.showError('There was a problem on the server.');
+            }
+        },
 
-            this.set('user', null);
-            this.set('controller.user', null);
+        sessionAuthenticationSucceeded: function () {
+            var self = this;
+            this.store.find('user', 'me').then(function (user) {
+                self.send('signedIn', user);
+                var attemptedTransition = self.get('session').get('attemptedTransition');
+                if (attemptedTransition) {
+                    attemptedTransition.retry();
+                    self.get('session').set('attemptedTransition', null);
+                } else {
+                    self.transitionTo(SimpleAuth.Configuration.routeAfterAuthentication);
+                }
+            });
+        },
+
+        sessionInvalidationFailed: function (error) {
+            this.notifications.showError(error.message);
         },
 
         openModal: function (modalName, model, type) {
+            this.get('dropdown').closeDropdowns();
+            key.setScope('modal');
             modalName = 'modals/' + modalName;
+            this.set('modalName', modalName);
             // We don't always require a modal to have a controller
             // so we're skipping asserting if one exists
             if (this.controllerFor(modalName, true)) {
@@ -46,17 +94,38 @@ var ApplicationRoute = Ember.Route.extend(ShortcutsRoute, {
                     this.controllerFor(modalName).set('src', model.get(type));
                 }
             }
+
             return this.render(modalName, {
                 into: 'application',
                 outlet: 'modal'
             });
         },
 
+        confirmModal : function () {
+            var modalName = this.get('modalName');
+            this.send('closeModal');
+            if (this.controllerFor(modalName, true)) {
+                this.controllerFor(modalName).send('confirmAccept');
+            }
+        },
+
         closeModal: function () {
-            return this.disconnectOutlet({
+            this.disconnectOutlet({
                 outlet: 'modal',
                 parentView: 'application'
             });
+            key.setScope('default');
+        },
+
+        loadServerNotifications: function (isDelayed) {
+            var self = this;
+            if (this.session.isAuthenticated) {
+                this.store.findAll('notification').then(function (serverNotifications) {
+                    serverNotifications.forEach(function (notification) {
+                        self.notifications.handleNotification(notification, isDelayed);
+                    });
+                });
+            }
         },
 
         handleErrors: function (errors) {

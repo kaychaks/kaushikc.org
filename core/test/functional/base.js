@@ -1,4 +1,4 @@
-/*globals Ghost, casper, __utils__ */
+/*globals casper */
 
 /**
  * Casper Tests
@@ -20,7 +20,7 @@
  * Requirements:
  * you must have phantomjs 1.9.1 and casperjs 1.1.0-DEV installed in order for these tests to work
  */
-
+/*jshint unused:false */
 var DEBUG = false, // TOGGLE THIS TO GET MORE SCREENSHOTS
     host = casper.cli.options.host || 'localhost',
     noPort = casper.cli.options.noPort || false,
@@ -30,24 +30,117 @@ var DEBUG = false, // TOGGLE THIS TO GET MORE SCREENSHOTS
     url = 'http://' + host + (noPort ? '/' : ':' + port + '/'),
     newUser = {
         name: 'Test User',
+        slug: 'test',
+        email: email,
+        password: password
+    },
+    newSetup = {
+        'blog-title': 'Test Blog',
+        name: 'Test User',
         email: email,
         password: password
     },
     user = {
-        email: email,
+        identification: email,
         password: password
     },
     falseUser = {
-        email: email,
+        identification: email,
         password: 'letmethrough'
     },
     testPost = {
         title: 'Bacon ipsum dolor sit amet',
         html: 'I am a test post.\n#I have some small content'
-    };
+    },
+    screens,
+    CasperTest,
+    // ## Debugging
+    jsErrors = [],
+    pageErrors = [],
+    resourceErrors = [];
+
+screens = {
+    root: {
+        url: 'ghost/',
+        linkSelector: '.nav-content',
+        selector: '.nav-content.active'
+    },
+    content: {
+        url: 'ghost/content/',
+        linkSelector: '.nav-content',
+        selector: '.nav-content.active'
+    },
+    editor: {
+        url: 'ghost/editor/',
+        linkSelector: '.nav-new',
+        selector: '#entry-title'
+    },
+    settings: {
+        url: 'ghost/settings/',
+        linkSelector: '.nav-settings',
+        selector: '.nav-settings.active'
+    },
+    'settings.general': {
+        url: 'ghost/settings/general',
+        selector: '.settings-nav-general.active'
+    },
+    'settings.users': {
+        url: 'ghost/settings/users',
+        linkSelector: '.settings-nav-users a',
+        selector: '.settings-nav-users.active'
+    },
+    'settings.users.user': {
+        url: 'ghost/settings/users/test',
+        linkSelector: '.user-menu-profile',
+        selector: '.user-profile'
+    },
+    signin: {
+        url: 'ghost/signin/',
+        selector: '.btn-blue'
+    },
+    'signin-authenticated': {
+        url: 'ghost/signin/',
+        // signin with authenticated user redirects to posts
+        selector: '.nav-content.active'
+    },
+    signout: {
+        url: 'ghost/signout/',
+        linkSelector: '.user-menu-signout',
+        // When no user exists we get redirected to setup which has btn-green
+        selector: '.btn-blue, .btn-green'
+    },
+    signup: {
+        url: 'ghost/signup/',
+        selector: '.btn-blue'
+    },
+    setup: {
+        url: 'ghost/setup/',
+        selector: '.btn-green'
+    },
+    'setup-authenticated': {
+        url: 'ghost/setup/',
+        selector: '.nav-content.active'
+    }
+};
 
 casper.writeContentToCodeMirror = function (content) {
     var lines = content.split('\n');
+
+    // If we are on a new editor, the autosave is going to get triggered when we try to type, so we need to trigger
+    // that and wait for it to sort itself out
+    if (/ghost\/editor\/$/.test(casper.getCurrentUrl())) {
+        casper.waitForSelector('.CodeMirror-wrap textarea', function onSuccess() {
+            casper.click('.CodeMirror-wrap textarea');
+        }, function onTimeout() {
+            casper.test.fail('CodeMirror was not found on initial load.');
+        }, 2000);
+
+        casper.waitForUrl(/\/ghost\/editor\/\d+\/$/, function onSuccess() {
+            // do nothing
+        }, function onTimeout() {
+            casper.test.fail('The url didn\'t change: ' + casper.getCurrentUrl());
+        }, 2000);
+    }
 
     casper.waitForSelector('.CodeMirror-wrap textarea', function onSuccess() {
         casper.each(lines, function (self, line) {
@@ -55,77 +148,60 @@ casper.writeContentToCodeMirror = function (content) {
             self.sendKeys('.CodeMirror-wrap textarea', casper.page.event.key.Enter, {keepFocus: true});
         });
 
+        casper.captureScreenshot('CodeMirror-Text.png');
+
         return this;
     }, function onTimeout() {
-        casper.test.fail('CodeMirror was not found.');
+        casper.test.fail('CodeMirror was not found on main load.');
     }, 2000);
 };
 
-casper.waitForOpaque = function (classname, then, timeout) {
-    timeout = timeout || casper.failOnTimeout(casper.test, 'waitForOpaque failed on ' + classname);
-
-    casper.waitFor(function checkOpaque() {
-        var value = this.evaluate(function (element) {
-            var target = document.querySelector(element);
-            if (target === null) {
-                return null;
+casper.waitForOpacity = function (classname, opacity, then, timeout) {
+    timeout = timeout || casper.failOnTimeout(casper.test, 'waitForOpacity failed on ' + classname + ' ' + opacity);
+    casper.waitForSelector(classname).then(function () {
+        casper.waitFor(function checkOpaque() {
+            var value = this.evaluate(function (element, opacity) {
+                var target = document.querySelector(element);
+                if (target === null) {
+                    return null;
+                }
+                return window.getComputedStyle(target).getPropertyValue('opacity') === opacity;
+            }, classname, opacity);
+            if (value !== true && value !== false) {
+                casper.test.fail('Unable to find element: ' + classname);
             }
-            return window.getComputedStyle(target).getPropertyValue('opacity') === '1';
-        }, classname);
-        if (value !== true && value !== false) {
-            casper.test.fail('Unable to find element: ' + classname);
-        }
-        return value;
-    }, then, timeout);
+            return value;
+        }, then, timeout);
+    });
+};
+
+casper.waitForOpaque = function (classname, then, timeout) {
+    casper.waitForOpacity(classname, '1', then, timeout);
+};
+
+casper.waitForTransparent = function (classname, then, timeout) {
+    casper.waitForOpacity(classname, '0', then, timeout);
 };
 
 // ### Then Open And Wait For Page Load
-// Always wait for the `#main` element as some indication that the ember app has loaded.
+// Always wait for the `.page-content` element as some indication that the ember app has loaded.
 casper.thenOpenAndWaitForPageLoad = function (screen, then, timeout) {
     then = then || function () {};
     timeout = timeout || casper.failOnTimeout(casper.test, 'Unable to load ' + screen);
 
-    var screens = {
-        'root': {
-            url: 'ghost/ember/',
-            selector: '#main-menu .content.active'
-        },
-        'content': {
-            url: 'ghost/ember/content/',
-            selector: '#main-menu .content.active'
-        },
-        'editor': {
-            url: 'ghost/ember/editor/',
-            selector: '#main-menu .editor.active'
-        },
-        'settings': {
-            url: 'ghost/ember/settings/',
-            selector: '.settings-content'
-        },
-        'settings.general': {
-            url: 'ghost/ember/settings/general',
-            selector: '.settings-content form#settings-general'
-        },
-        'settings.user': {
-            url: 'ghost/ember/settings/user',
-            selector: '.settings-content form.user-profile'
-        },
-        'signin': {
-            url: 'ghost/ember/signin/',
-            selector: '.button-save'
-        },
-        'signout': {
-            url: 'ghost/ember/signout/',
-            selector: '.button-save'
-        },
-        'signup': {
-            url: 'ghost/ember/signup/',
-            selector: '.button-save'
-        }
-    };
-
     return casper.thenOpen(url + screens[screen].url).then(function () {
-        return casper.waitForSelector(screens[screen].selector, then, timeout, 15000);
+        // Some screens fade in
+        return casper.waitForOpaque(screens[screen].selector, then, timeout, 10000);
+    });
+};
+
+casper.thenTransitionAndWaitForScreenLoad = function (screen, then, timeout) {
+    then = then || function () {};
+    timeout = timeout || casper.failOnTimeout(casper.test, 'Unable to load ' + screen);
+
+    return casper.thenClick(screens[screen].linkSelector).then(function () {
+        // Some screens fade in
+        return casper.waitForOpaque(screens[screen].selector, then, timeout, 10000);
     });
 };
 
@@ -136,17 +212,24 @@ casper.failOnTimeout = function (test, message) {
 };
 
 // ### Fill And Save
-// With Ember in place, we don't want to submit forms, rather press the green button which always has a class of
-// 'button-save'. This method handles that smoothly.
+// With Ember in place, we don't want to submit forms, rather press the button which always has a class of
+// 'btn-blue'. This method handles that smoothly.
 casper.fillAndSave = function (selector, data) {
-    casper.fill(selector, data, false);
-    casper.thenClick(selector + ' .button-save');
+    casper.then(function doFill() {
+        casper.fill(selector, data, false);
+        casper.thenClick('.btn-blue');
+    });
 };
 
-// ## Debugging
-var jsErrors = [],
-    pageErrors = [],
-    resourceErrors = [];
+// ### Fill And Add
+// With Ember in place, we don't want to submit forms, rather press the green button which always has a class of
+// 'btn-green'. This method handles that smoothly.
+casper.fillAndAdd = function (selector, data) {
+    casper.then(function doFill() {
+        casper.fill(selector, data, false);
+        casper.thenClick('.btn-green');
+    });
+};
 
 // ## Echo Concise
 // Does casper.echo but checks for the presence of the --concise flag
@@ -164,7 +247,7 @@ casper.on('remote.message', function (msg) {
 // output any errors
 casper.on('error', function (msg, trace) {
     casper.echoConcise('ERROR, ' + msg, 'ERROR');
-    if (trace) {
+    if (trace && trace[0]) {
         casper.echoConcise('file:     ' + trace[0].file, 'WARNING');
         casper.echoConcise('line:     ' + trace[0].line, 'WARNING');
         casper.echoConcise('function: ' + trace[0]['function'], 'WARNING');
@@ -175,7 +258,7 @@ casper.on('error', function (msg, trace) {
 // output any page errors
 casper.on('page.error', function (msg, trace) {
     casper.echoConcise('PAGE ERROR: ' + msg, 'ERROR');
-    if (trace) {
+    if (trace && trace[0]) {
         casper.echoConcise('file:     ' + trace[0].file, 'WARNING');
         casper.echoConcise('line:     ' + trace[0].line, 'WARNING');
         casper.echoConcise('function: ' + trace[0]['function'], 'WARNING');
@@ -183,9 +266,9 @@ casper.on('page.error', function (msg, trace) {
     pageErrors.push(msg);
 });
 
-casper.on('resource.received', function(resource) {
+casper.on('resource.received', function (resource) {
     var status = resource.status;
-    if(status >= 400) {
+    if (status >= 400) {
         casper.echoConcise('RESOURCE ERROR: ' + resource.url + ' failed to load (' + status + ')', 'ERROR');
 
         resourceErrors.push({
@@ -216,7 +299,7 @@ casper.test.on('fail', function captureFailure() {
 });
 
 // on exit, output any errors
-casper.test.on('exit', function() {
+casper.test.on('exit', function () {
     if (jsErrors.length > 0) {
         casper.echo(jsErrors.length + ' Javascript errors found', 'WARNING');
     } else {
@@ -235,8 +318,7 @@ casper.test.on('exit', function() {
     }
 });
 
-var CasperTest = (function () {
-
+CasperTest = (function () {
     var _beforeDoneHandler,
         _noop = function noop() { },
         _isUserRegistered = false;
@@ -245,7 +327,7 @@ var CasperTest = (function () {
     casper.test.tearDown(function (done) {
         casper.then(_beforeDoneHandler);
 
-        CasperTest.Routines.emberSignout.run();
+        CasperTest.Routines.signout.run();
 
         casper.run(done);
     });
@@ -260,59 +342,18 @@ var CasperTest = (function () {
             casper.start('about:blank').viewport(1280, 1024);
 
             if (!doNotAutoLogin) {
-                // Only call register once for the lifetime of Mindless
-                if (!_isUserRegistered) {
-                    CasperTest.Routines.logout.run(test);
-                    CasperTest.Routines.register.run(test);
-
-                    _isUserRegistered = true;
-                }
-
-                /* Ensure we're logged out at the start of every test or we may get
-                   unexpected failures. */
-                CasperTest.Routines.logout.run(test);
-                CasperTest.Routines.login.run(test);
-            }
-
-            suite.call(casper, test);
-
-            casper.run(function () {
-                test.done();
-            });
-        };
-
-        if (typeof expect === 'function') {
-            doNotAutoLogin = suite;
-            suite = expect;
-
-            casper.test.begin(testName, runTest);
-        } else {
-            casper.test.begin(testName, expect, runTest);
-        }
-    }
-
-    function emberBegin(testName, expect, suite, doNotAutoLogin) {
-        _beforeDoneHandler = _noop;
-
-        var runTest = function (test) {
-            test.filename = testName.toLowerCase().replace(/ /g, '-').concat('.png');
-
-            casper.start('about:blank').viewport(1280, 1024);
-
-            if (!doNotAutoLogin) {
                 // Only call register once for the lifetime of CasperTest
                 if (!_isUserRegistered) {
-
-                    CasperTest.Routines.emberSignout.run();
-                    CasperTest.Routines.emberSignup.run();
+                    CasperTest.Routines.signout.run();
+                    CasperTest.Routines.setup.run();
 
                     _isUserRegistered = true;
                 }
 
                 /* Ensure we're logged out at the start of every test or we may get
                  unexpected failures. */
-                CasperTest.Routines.emberSignout.run();
-                CasperTest.Routines.emberSignin.run();
+                CasperTest.Routines.signout.run();
+                CasperTest.Routines.signin.run();
             }
 
             suite.call(casper, test);
@@ -321,7 +362,6 @@ var CasperTest = (function () {
                 test.done();
             });
         };
-
 
         if (typeof expect === 'function') {
             doNotAutoLogin = suite;
@@ -344,102 +384,51 @@ var CasperTest = (function () {
 
     return {
         begin: begin,
-        emberBegin: emberBegin,
         beforeDone: beforeDone
     };
-
 }());
 
 CasperTest.Routines = (function () {
+    function setup() {
+        casper.thenOpenAndWaitForPageLoad('setup', function then() {
+            casper.captureScreenshot('setting_up1.png');
 
-    function register(test) {
-        casper.thenOpen(url + 'ghost/signup/');
-
-        casper.waitForOpaque('.signup-box', function then() {
-            this.fill('#signup', newUser, true);
-        });
-
-        casper.waitForSelectorTextChange('.notification-error', function onSuccess() {
-            var errorText = casper.evaluate(function () {
-                return document.querySelector('.notification-error').innerText;
-            });
-            casper.echoConcise('It appears as though a user is already registered. Error text: ' + errorText);
-        }, function onTimeout() {
-            casper.echoConcise('It appears as though a user was not already registered.');
-        }, 2000);
-    }
-
-    function emberSignup() {
-        casper.thenOpenAndWaitForPageLoad('signup', function then() {
-            casper.captureScreenshot('ember_signing_up1.png');
-
-            casper.waitForOpaque('.signup-box', function then() {
-                this.fillAndSave('#signup', newUser);
+            casper.waitForOpaque('.setup-box', function then() {
+                this.fillAndAdd('#setup', newSetup);
             });
 
-            casper.captureScreenshot('ember_signing_up2.png');
+            casper.captureScreenshot('setting_up2.png');
 
             casper.waitForSelectorTextChange('.notification-error', function onSuccess() {
                 var errorText = casper.evaluate(function () {
                     return document.querySelector('.notification-error').innerText;
                 });
-                casper.echoConcise('It appears as though a user is already registered. Error text: ' + errorText);
+                casper.echoConcise('Setup failed. Error text: ' + errorText);
             }, function onTimeout() {
-                casper.echoConcise('It appears as though a user was not already registered.');
+                casper.echoConcise('Setup completed.');
             }, 2000);
 
-            casper.captureScreenshot('ember_signing_up3.png');
-
+            casper.captureScreenshot('setting_up3.png');
         });
     }
 
-    function login(test) {
-        casper.thenOpen(url + 'ghost/signin/');
-
-        casper.waitForResource(/ghost\/signin/);
-
-        casper.waitForSelector('.login-box', function () {}, function () {
-            console.log(casper.getHTML());
-        });
-
-        casper.waitForOpaque('.login-box', function then() {
-            casper.captureScreenshot('got_sign_in.png');
-            this.fill('#login', user, true);
-            casper.captureScreenshot('filled_sign_in.png');
-        });
-
-        casper.waitForResource(/ghost\/$/).then(function () {
-            casper.captureScreenshot('have_logged_in.png');
-        });
-    }
-
-    function emberSignin() {
+    function signin() {
         casper.thenOpenAndWaitForPageLoad('signin', function then() {
-
             casper.waitForOpaque('.login-box', function then() {
-                casper.captureScreenshot('ember_signing_in.png');
+                casper.captureScreenshot('signing_in.png');
                 this.fillAndSave('#login', user);
-                casper.captureScreenshot('ember_signing_in2.png');
+                casper.captureScreenshot('signing_in2.png');
             });
 
             casper.waitForResource(/posts\/\?status=all&staticPages=all/, function then() {
-                casper.captureScreenshot('ember_signing_in3.png');
+                casper.captureScreenshot('signing_in.png');
             }, function timeout() {
                 casper.test.fail('Unable to signin and load admin panel');
             });
         });
     }
 
-    function logout(test) {
-        casper.thenOpen(url + 'ghost/signout/');
-
-        casper.captureScreenshot('logging_out.png');
-
-        // Wait for signin or signup
-        casper.waitForResource(/ghost\/sign/);
-    }
-
-    function emberSignout() {
+    function signout() {
         casper.thenOpenAndWaitForPageLoad('signout', function then() {
             casper.captureScreenshot('ember_signing_out.png');
         });
@@ -447,18 +436,13 @@ CasperTest.Routines = (function () {
 
     // This will need switching over to ember once settings general is working properly.
     function togglePermalinks(state) {
-        casper.thenOpen(url + 'ghost/settings/general');
-
-        casper.waitForResource(/ghost\/settings\/general/);
-
-        casper.waitForSelector('#general');
-        casper.waitForOpaque('#general', function then() {
+        casper.thenOpenAndWaitForPageLoad('settings.general', function then() {
             var currentState = this.evaluate(function () {
                 return document.querySelector('#permalinks') && document.querySelector('#permalinks').checked ? 'on' : 'off';
             });
             if (currentState !== state) {
                 casper.thenClick('#permalinks');
-                casper.thenClick('.button-save');
+                casper.thenClick('.btn-blue');
 
                 casper.captureScreenshot('saving.png');
 
@@ -481,12 +465,12 @@ CasperTest.Routines = (function () {
 
         if (publish) {
             // Open the publish options menu;
-            casper.thenClick('.js-publish-splitbutton .options.up');
+            casper.thenClick('.js-publish-splitbutton .dropdown-toggle');
 
             casper.waitForOpaque('.js-publish-splitbutton .open');
 
             // Select the publish post button
-            casper.thenClick('.js-publish-splitbutton li:first-child a');
+            casper.thenClick('.post-save-publish a');
 
             casper.waitForSelectorTextChange('.js-publish-button', function onSuccess() {
                 casper.thenClick('.js-publish-button');
@@ -495,18 +479,15 @@ CasperTest.Routines = (function () {
             casper.thenClick('.js-publish-button');
         }
 
-        // **Note:** This should include tags on all post requests! Uncomment and replace lines below with this when fixed.
-        //    casper.waitForResource(/posts\/\?include=tags$/);
-
-        casper.waitForResource(/posts\/$/);
+        casper.waitForResource(/posts\/\?include=tags$/);
     }
 
     function _createRunner(fn) {
         fn.run = function run(test) {
-            var routine = this;
+            var self = this;
 
             casper.then(function () {
-                routine.call(casper, test);
+                self.call(casper, test);
             });
         };
 
@@ -514,14 +495,10 @@ CasperTest.Routines = (function () {
     }
 
     return {
-        register: _createRunner(register),
-        login: _createRunner(login),
-        logout: _createRunner(logout),
-        togglePermalinks: _createRunner(togglePermalinks),
-        emberSignup: _createRunner(emberSignup),
-        emberSignin: _createRunner(emberSignin),
-        emberSignout: _createRunner(emberSignout),
-        createTestPost: _createRunner(createTestPost)
+        setup: _createRunner(setup),
+        signin: _createRunner(signin),
+        signout: _createRunner(signout),
+        createTestPost: _createRunner(createTestPost),
+        togglePermalinks: _createRunner(togglePermalinks)
     };
-
 }());
