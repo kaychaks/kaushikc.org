@@ -1,10 +1,13 @@
 var ApplicationController = Ember.Controller.extend({
-    isSignedIn: Ember.computed.bool('user.isSignedIn'),
-    hideNav: Ember.computed.match('currentPath', /(signin|signup|forgotten|reset)/),
+    hideNav: Ember.computed.match('currentPath', /(error|signin|signup|setup|forgotten|reset)/),
+
+    topNotificationCount: 0,
+    showGlobalMobileNav: false,
+    showSettingsMenu: false,
 
     actions: {
-        toggleMenu: function () {
-            this.toggleProperty('showMenu');
+        topNotificationChange: function (count) {
+            this.set('topNotificationCount', count);
         }
     }
 });

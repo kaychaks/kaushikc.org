@@ -9,21 +9,33 @@ var makeRoute = function (root, args) {
     return route;
 };
 
+
 function ghostPaths() {
     var path = window.location.pathname,
-        subdir = path.substr(0, path.search('/ghost/'));
+        subdir = path.substr(0, path.search('/ghost/')),
+        adminRoot = subdir + '/ghost',
+        apiRoot = subdir + '/ghost/api/v0.1';
+
+    function assetUrl(src) {
+        return subdir + src;
+    }
 
     return {
         subdir: subdir,
-        adminRoot: subdir + '/ghost',
-        apiRoot: subdir + '/ghost/api/v0.1',
+        blogRoot: subdir + '/',
+        adminRoot: adminRoot,
+        apiRoot: apiRoot,
 
-        adminUrl: function () {
-            return makeRoute(this.adminRoot, arguments);
-        },
+        url: {
+            admin: function () {
+                return makeRoute(adminRoot, arguments);
+            },
 
-        apiUrl: function () {
-            return makeRoute(this.apiRoot, arguments);
+            api: function () {
+                return makeRoute(apiRoot, arguments);
+            },
+
+            asset: assetUrl
         }
     };
 }

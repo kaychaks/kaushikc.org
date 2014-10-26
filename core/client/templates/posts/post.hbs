@@ -1,21 +1,22 @@
-{{#if title}}
+<header class="post-preview-header clearfix">
+    {{#link-to "posts" tagName="button" class="btn btn-default btn-back"}}Back{{/link-to}}
+    <h2 class="page-title">Preview</h2>
+    <button type="button" {{bind-attr class="featured:featured:unfeatured"}} title="Feature this post" {{action "toggleFeatured"}}>
+        <span class="hidden">Star</span>
+    </button>
+    <small class="post-published-by">
+        <span class="status">{{#if isPublished}}Published{{else}}Written{{/if}}</span>
+        <span class="normal">by</span>
+        <span class="author">{{#if author.name}}{{author.name}}{{else}}{{author.email}}{{/if}}</span>
+    </small>
+    <section class="post-controls">
+        {{#link-to "editor.edit" this class="btn btn-default post-edit"}} Edit{{/link-to}}
+    </section>
+</header>
 
-    {{partial "floating-header"}}
-
-    {{#view "content-preview-content-view" tagName="section"}}
-        <div class="wrapper">
-            <h1>{{{title}}}</h1>
-            {{{html}}}
-        </div>
-    {{/view}}
-
-{{else}}
-
-    <div class="no-posts-box">
-        <div class="no-posts">
-            <h3>You Haven't Written Any Posts Yet!</h3>
-            {{#link-to "editor.new"}}<button class="button-add large" title="New Post">Write a new Post</button>{{/link-to}}
-        </div>
+{{#view "content-preview-content-view" tagName="section"}}
+    <div class="wrapper">
+        <h1>{{title}}</h1>
+        {{gh-format-html html}}
     </div>
-
-{{/if}}
+{{/view}}

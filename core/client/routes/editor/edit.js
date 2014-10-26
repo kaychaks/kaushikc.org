@@ -1,18 +1,18 @@
-import AuthenticatedRoute from 'ghost/routes/authenticated';
 import base from 'ghost/mixins/editor-route-base';
 
-var EditorEditRoute = AuthenticatedRoute.extend(base, {
+var EditorEditRoute = Ember.Route.extend(SimpleAuth.AuthenticatedRouteMixin, base, {
     classNames: ['editor'],
 
     model: function (params) {
         var self = this,
             post,
-            postId;
+            postId,
+            paginationSettings;
 
         postId = Number(params.post_id);
 
-        if (!Number.isInteger(postId) || !Number.isFinite(postId) || postId <= 0) {
-            this.transitionTo('posts.index');
+        if (!_.isNumber(postId) || !_.isFinite(postId) || postId % 1 !== 0 || postId <= 0) {
+            return this.transitionTo('error404', 'editor/' + params.post_id);
         }
 
         post = this.store.getById('post', postId);
@@ -21,18 +21,31 @@ var EditorEditRoute = AuthenticatedRoute.extend(base, {
             return post;
         }
 
-        return this.store.find('post', {
-            id: params.post_id,
+        paginationSettings = {
+            id: postId,
             status: 'all',
             staticPages: 'all'
-        }).then(function (records) {
-            var post = records.get('firstObject');
+        };
 
-            if (post) {
-                return post;
+        return this.store.find('user', 'me').then(function (user) {
+            if (user.get('isAuthor')) {
+                paginationSettings.author = user.get('slug');
             }
 
-            return self.transitionTo('posts.index');
+            return self.store.find('post', paginationSettings).then(function (records) {
+                var post = records.get('firstObject');
+
+                if (user.get('isAuthor') && post.isAuthoredByUser(user)) {
+                    // do not show the post if they are an author but not this posts author
+                    post = null;
+                }
+
+                if (post) {
+                    return post;
+                }
+
+                return self.transitionTo('posts.index');
+            });
         });
     },
 
@@ -42,12 +55,16 @@ var EditorEditRoute = AuthenticatedRoute.extend(base, {
 
     setupController: function (controller, model) {
         this._super(controller, model);
+
         controller.set('scratch', model.get('markdown'));
 
-        model.get('tags').then(function (tags) {
-            // used to check if anything has changed in the editor
-            controller.set('previousTagNames', tags.mapBy('name'));
-        });
+        controller.set('titleScratch', model.get('title'));
+
+        // used to check if anything has changed in the editor
+        controller.set('previousTagNames', model.get('tags').mapBy('name'));
+
+        // attach model-related listeners created in editor-route-base
+        this.attachModelHooks(controller, model);
     },
 
     actions: {
@@ -59,6 +76,8 @@ var EditorEditRoute = AuthenticatedRoute.extend(base, {
                 isSaving = model.get('isSaving'),
                 isDeleted = model.get('isDeleted'),
                 modelIsDirty = model.get('isDirty');
+
+            this.send('closeSettingsMenu');
 
             // when `isDeleted && isSaving`, model is in-flight, being saved
             // to the server. when `isDeleted && !isSaving && !modelIsDirty`,
@@ -75,6 +94,9 @@ var EditorEditRoute = AuthenticatedRoute.extend(base, {
 
             // since the transition is now certain to complete..
             window.onbeforeunload = null;
+
+            // remove model-related listeners created in editor-route-base
+            this.detachModelHooks(controller, model);
         }
     }
 });

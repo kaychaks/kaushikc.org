@@ -1,8 +1,6 @@
 import uploader from 'ghost/assets/lib/uploader';
 
 var Markdown = Ember.Component.extend({
-    classNames: ['rendered-markdown'],
-
     didInsertElement: function () {
         this.set('scrollWrapper', this.$().closest('.entry-preview-content'));
     },
@@ -22,7 +20,7 @@ var Markdown = Ember.Component.extend({
 
             uploader.call(dropzones, {
                 editor: true,
-                filestorage: false
+                fileStorage: this.get('config.fileStorage')
             });
 
             dropzones.on('uploadstart', _.bind(this.sendAction, this, 'uploadStarted'));

@@ -7,12 +7,14 @@ var PostItemView = itemView.extend({
 
     isPage: Ember.computed.alias('controller.model.page'),
 
-    // WIP for #2308
-    /*
-    openEditor: function () {
-        this.get('controller').send('openEditor', this.get('controller.model'));  // send action to handle transition to editor route
-    }.on('doubleClick')
-    */
+    doubleClick: function () {
+        this.get('controller').send('openEditor');
+    },
+
+    click: function () {
+        this.get('controller').send('showPostContent');
+    }
+
 });
 
 export default PostItemView;
