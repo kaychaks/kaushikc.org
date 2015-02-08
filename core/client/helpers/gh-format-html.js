@@ -11,7 +11,10 @@ var formatHTML = Ember.Handlebars.makeBoundHelper(function (html) {
         '<pre class="iframe-embed-placeholder">Embedded iFrame</pre>');
 
     // sanitize HTML
+    // jscs:disable requireCamelCaseOrUpperCaseIdentifiers
     escapedhtml = html_sanitize(escapedhtml, cajaSanitizers.url, cajaSanitizers.id);
+    // jscs:enable requireCamelCaseOrUpperCaseIdentifiers
+
     return new Handlebars.SafeString(escapedhtml);
 });
 

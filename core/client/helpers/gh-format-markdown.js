@@ -1,9 +1,12 @@
 /* global Showdown, Handlebars, html_sanitize*/
 import cajaSanitizers from 'ghost/utils/caja-sanitizers';
 
-var showdown = new Showdown.converter({extensions: ['ghostimagepreview', 'ghostgfm']});
+var showdown,
+    formatMarkdown;
 
-var formatMarkdown = Ember.Handlebars.makeBoundHelper(function (markdown) {
+showdown = new Showdown.converter({extensions: ['ghostimagepreview', 'ghostgfm', 'footnotes', 'highlight']});
+
+formatMarkdown = Ember.Handlebars.makeBoundHelper(function (markdown) {
     var escapedhtml = '';
 
     // convert markdown to HTML
@@ -16,7 +19,10 @@ var formatMarkdown = Ember.Handlebars.makeBoundHelper(function (markdown) {
         '<pre class="iframe-embed-placeholder">Embedded iFrame</pre>');
 
     // sanitize html
+    // jscs:disable requireCamelCaseOrUpperCaseIdentifiers
     escapedhtml = html_sanitize(escapedhtml, cajaSanitizers.url, cajaSanitizers.id);
+    // jscs:enable requireCamelCaseOrUpperCaseIdentifiers
+
     return new Handlebars.SafeString(escapedhtml);
 });
 

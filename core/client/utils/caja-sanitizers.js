@@ -8,8 +8,8 @@ var url,
  * Check if URL is allowed
  * URLs are allowed if they start with http://, https://, or /.
  */
-var url = function (url) {
-	url = url.toString().replace(/['"]+/g, '');
+url = function (url) {
+    url = url.toString().replace(/['"]+/g, '');
     if (/^https?:\/\//.test(url) || /^\//.test(url)) {
         return url;
     }
@@ -19,7 +19,7 @@ var url = function (url) {
  * Check if ID is allowed
  * All ids are allowed at the moment.
  */
-var id = function (id) {
+id = function (id) {
     return id;
 };
 

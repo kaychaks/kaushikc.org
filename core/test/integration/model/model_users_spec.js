@@ -8,6 +8,7 @@ var testUtils   = require('../../utils'),
     _           = require('lodash'),
 
     // Stuff we are testing
+    utils       = require('../../../server/utils'),
     UserModel   = require('../../../server/models/user').User,
     RoleModel   = require('../../../server/models/role').Role,
     context     = testUtils.context.admin,
@@ -259,6 +260,19 @@ describe('User Model', function run() {
             }).catch(done);
         });
 
+        it('can findPage with limit all', function (done) {
+            return testUtils.fixtures.createExtraUsers().then(function () {
+                return UserModel.findPage({limit: 'all'});
+            }).then(function (results) {
+                results.meta.pagination.page.should.equal(1);
+                results.meta.pagination.limit.should.equal('all');
+                results.meta.pagination.pages.should.equal(1);
+                results.users.length.should.equal(7);
+
+                done();
+            }).catch(done);
+        });
+
         it('can NOT findPage for a page that overflows the datatype', function (done) {
             UserModel.findPage({page: 5700000000055345439587894375457849375284932759842375894372589243758947325894375894275894275894725897432859724309})
                 .then(function (paginationResult) {
@@ -282,6 +296,29 @@ describe('User Model', function run() {
             }).then(function (found) {
                 should.exist(found);
                 found.attributes.name.should.equal(firstUser.attributes.name);
+
+                done();
+            }).catch(done);
+        });
+
+        it('can findOne by role name', function (done) {
+            return testUtils.fixtures.createExtraUsers().then(function () {
+                return Promise.join(UserModel.findOne({role: 'Owner'}), UserModel.findOne({role: 'Editor'}));
+            }).then(function (results) {
+                var owner = results[0],
+                    editor = results[1];
+
+                should.exist(owner);
+                should.exist(editor);
+
+                owner = owner.toJSON();
+                editor = editor.toJSON();
+
+                should.exist(owner.roles);
+                should.exist(editor.roles);
+
+                owner.roles[0].name.should.equal('Owner');
+                editor.roles[0].name.should.equal('Editor');
 
                 done();
             }).catch(done);
@@ -316,7 +353,7 @@ describe('User Model', function run() {
             RoleModel.findOne().then(function (role) {
                 userData.roles = [role.toJSON()];
 
-                return UserModel.add(userData, _.extend({}, context));
+                return UserModel.add(userData, _.extend({}, context, {include: ['roles']}));
             }).then(function (createdUser) {
                 should.exist(createdUser);
                 createdUser.has('uuid').should.equal(true);
@@ -354,7 +391,7 @@ describe('User Model', function run() {
     });
 
     describe('Password Reset', function () {
-        beforeEach(testUtils.setup('owner'));
+        beforeEach(testUtils.setup('users:roles'));
 
         it('can generate reset token', function (done) {
             // Expires in one minute
@@ -378,8 +415,26 @@ describe('User Model', function run() {
                 dbHash = uuid.v4();
 
             UserModel.findAll().then(function (results) {
-                return UserModel.generateResetToken(results.models[0].attributes.email, expires, dbHash);
+                return UserModel.generateResetToken(results.models[1].attributes.email, expires, dbHash);
             }).then(function (token) {
+                return UserModel.validateToken(token, dbHash);
+            }).then(function () {
+                done();
+            }).catch(done);
+        });
+
+        it('can validate an URI encoded reset token', function (done) {
+            // Expires in one minute
+            var expires = Date.now() + 60000,
+                dbHash = uuid.v4();
+
+            UserModel.findAll().then(function (results) {
+                return UserModel.generateResetToken(results.models[1].attributes.email, expires, dbHash);
+            }).then(function (token) {
+                token = utils.encodeBase64URLsafe(token);
+                token = encodeURIComponent(token);
+                token = decodeURIComponent(token);
+                token = utils.decodeBase64URLsafe(token);
                 return UserModel.validateToken(token, dbHash);
             }).then(function () {
                 done();
@@ -400,6 +455,7 @@ describe('User Model', function run() {
 
                 return UserModel.generateResetToken(firstUser.attributes.email, expires, dbHash);
             }).then(function (token) {
+                token = utils.encodeBase64URLsafe(token);
                 return UserModel.resetPassword(token, 'newpassword', 'newpassword', dbHash);
             }).then(function (resetUser) {
                 var resetPassword = resetUser.get('password');
