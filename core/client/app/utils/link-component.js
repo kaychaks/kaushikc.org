@@ -1,17 +1,20 @@
 import Ember from 'ember';
+import {invokeAction} from 'ember-invoke-action';
 
-Ember.LinkComponent.reopen({
-    active: Ember.computed('attrs.params', '_routing.currentState', function () {
-        var isActive = this._super();
+const {LinkComponent, computed} = Ember;
 
-        if (typeof this.attrs.alternateActive === 'function') {
-            this.attrs.alternateActive(isActive);
+LinkComponent.reopen({
+    active: computed('attrs.params', '_routing.currentState', function () {
+        let isActive = this._super(...arguments);
+
+        if (typeof this.get('alternateActive') === 'function') {
+            invokeAction(this, 'alternateActive', isActive);
         }
 
         return isActive;
     }),
 
-    activeClass: Ember.computed('tagName', function () {
+    activeClass: computed('tagName', function () {
         return this.get('tagName') === 'button' ? '' : 'active';
     })
 });

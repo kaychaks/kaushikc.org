@@ -1,8 +1,10 @@
-var imageMarkdownRegex = /^!(?:\[([^\n\]]*)\])(?:\(([^\n\]]*)\))?$/gim;
+const imageMarkdownRegex = /^!(?:\[([^\n\]]*)\])(?:\(([^\n\]]*)\))?$/gim;
 
 // Process the markdown content and find all of the locations where there is an image markdown block
 function parse(stringToParse) {
-    var m, images = [];
+    let images = [];
+    let m;
+
     while ((m = imageMarkdownRegex.exec(stringToParse)) !== null) {
         images.push(m);
     }
@@ -10,28 +12,13 @@ function parse(stringToParse) {
     return images;
 }
 
-// Loop through all dropzones in the preview and find which one was the target of the upload
-function getZoneIndex(element) {
-    var zones = document.querySelectorAll('.js-entry-preview .js-drop-zone'),
-        i;
-
-    for (i = 0; i < zones.length; i += 1) {
-        if (zones.item(i) === element) {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
 // Figure out the start and end of the selection range for the src in the markdown, so we know what to replace
-function getSrcRange(content, element) {
-    var images = parse(content),
-        index = getZoneIndex(element),
-        replacement = {};
+function getSrcRange(content, index) {
+    let images = parse(content);
+    let replacement = {};
 
     if (index > -1) {
-        // [1] matches the alt test, and 2 matches the url between the ()
+        // [1] matches the alt text, and 2 matches the url between the ()
         // if the () are missing entirely, which is valid, [2] will be undefined and we'll need to treat this case
         // a little differently
         if (images[index][2] === undefined) {
@@ -49,5 +36,5 @@ function getSrcRange(content, element) {
 }
 
 export default {
-    getSrcRange: getSrcRange
+    getSrcRange
 };

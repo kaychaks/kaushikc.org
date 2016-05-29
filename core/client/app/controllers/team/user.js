@@ -1,34 +1,53 @@
 import Ember from 'ember';
-import SlugGenerator from 'ghost/models/slug-generator';
 import isNumber from 'ghost/utils/isNumber';
 import boundOneWay from 'ghost/utils/bound-one-way';
-import ValidationEngine from 'ghost/mixins/validation-engine';
+import { invoke } from 'ember-invoke-action';
 
-export default Ember.Controller.extend(ValidationEngine, {
-    // ValidationEngine settings
-    validationType: 'user',
+const {
+    Controller,
+    RSVP,
+    computed,
+    inject: {service},
+    run,
+    isArray
+} = Ember;
+const {alias, and, not, or, readOnly} = computed;
+
+export default Controller.extend({
     submitting: false,
+    lastPromise: null,
+    showDeleteUserModal: false,
+    showTransferOwnerModal: false,
+    showUploadCoverModal: false,
+    showUplaodImageModal: false,
+    _scratchFacebook: null,
+    _scratchTwitter: null,
 
-    ghostPaths: Ember.inject.service('ghost-paths'),
-    notifications: Ember.inject.service(),
+    ajax: service(),
+    dropdown: service(),
+    ghostPaths: service(),
+    notifications: service(),
+    session: service(),
+    slugGenerator: service(),
 
-    currentUser: Ember.computed.alias('session.user'),
+    user: alias('model'),
+    currentUser: alias('session.user'),
 
-    isNotOwnProfile: Ember.computed('user.id', 'currentUser.id', function () {
+    email: readOnly('model.email'),
+    slugValue: boundOneWay('model.slug'),
+
+    isNotOwnersProfile: not('user.isOwner'),
+    isAdminUserOnOwnerProfile: and('currentUser.isAdmin', 'user.isOwner'),
+    canAssignRoles: or('currentUser.isAdmin', 'currentUser.isOwner'),
+    canMakeOwner: and('currentUser.isOwner', 'isNotOwnProfile', 'user.isAdmin'),
+    rolesDropdownIsVisible: and('isNotOwnProfile', 'canAssignRoles', 'isNotOwnersProfile'),
+    userActionsAreVisible: or('deleteUserActionIsVisible', 'canMakeOwner'),
+
+    isNotOwnProfile: computed('user.id', 'currentUser.id', function () {
         return this.get('user.id') !== this.get('currentUser.id');
     }),
 
-    isNotOwnersProfile: Ember.computed.not('user.isOwner'),
-
-    isAdminUserOnOwnerProfile: Ember.computed.and('currentUser.isAdmin', 'user.isOwner'),
-
-    canAssignRoles: Ember.computed.or('currentUser.isAdmin', 'currentUser.isOwner'),
-
-    canMakeOwner: Ember.computed.and('currentUser.isOwner', 'isNotOwnProfile', 'user.isAdmin'),
-
-    rolesDropdownIsVisible: Ember.computed.and('isNotOwnProfile', 'canAssignRoles', 'isNotOwnersProfile'),
-
-    deleteUserActionIsVisible: Ember.computed('currentUser', 'canAssignRoles', 'user', function () {
+    deleteUserActionIsVisible: computed('currentUser', 'canAssignRoles', 'user', function () {
         if ((this.get('canAssignRoles') && this.get('isNotOwnProfile') && !this.get('user.isOwner')) ||
             (this.get('currentUser.isEditor') && (this.get('isNotOwnProfile') ||
             this.get('user.isAuthor')))) {
@@ -36,68 +55,64 @@ export default Ember.Controller.extend(ValidationEngine, {
         }
     }),
 
-    userActionsAreVisible: Ember.computed.or('deleteUserActionIsVisible', 'canMakeOwner'),
-
-    user: Ember.computed.alias('model'),
-
-    email: Ember.computed.readOnly('model.email'),
-
-    slugValue: boundOneWay('model.slug'),
-
-    lastPromise: null,
-
     // duplicated in gh-user-active -- find a better home and consolidate?
-
-    userDefault: Ember.computed('ghostPaths', function () {
-        return this.get('ghostPaths.url').asset('/shared/img/user-image.png');
+    userDefault: computed('ghostPaths', function () {
+        return `${this.get('ghostPaths.subdir')}/ghost/img/user-image.png`;
     }),
 
-    userImageBackground: Ember.computed('user.image', 'userDefault', function () {
-        var url = this.get('user.image') || this.get('userDefault');
+    userImageBackground: computed('user.image', 'userDefault', function () {
+        let url = this.get('user.image') || this.get('userDefault');
 
-        return `background-image: url(${url})`.htmlSafe();
+        return Ember.String.htmlSafe(`background-image: url(${url})`);
     }),
-
     // end duplicated
 
-    coverDefault: Ember.computed('ghostPaths', function () {
-        return this.get('ghostPaths.url').asset('/shared/img/user-cover.png');
+    coverDefault: computed('ghostPaths', function () {
+        return `${this.get('ghostPaths.subdir')}/ghost/img/user-cover.png`;
     }),
 
-    coverImageBackground: Ember.computed('user.cover', 'coverDefault', function () {
-        var url = this.get('user.cover') || this.get('coverDefault');
+    coverImageBackground: computed('user.cover', 'coverDefault', function () {
+        let url = this.get('user.cover') || this.get('coverDefault');
 
-        return `background-image: url(${url})`.htmlSafe();
+        return Ember.String.htmlSafe(`background-image: url(${url})`);
     }),
 
-    coverTitle: Ember.computed('user.name', function () {
-        return this.get('user.name') + '\'s Cover Image';
+    coverTitle: computed('user.name', function () {
+        return `${this.get('user.name')}'s Cover Image`;
     }),
 
-    // Lazy load the slug generator for slugPlaceholder
-    slugGenerator: Ember.computed(function () {
-        return SlugGenerator.create({
-            ghostPaths: this.get('ghostPaths'),
-            slugType: 'user'
-        });
+    roles: computed(function () {
+        return this.store.query('role', {permissions: 'assign'});
     }),
 
-    roles: Ember.computed(function () {
-        return this.store.find('role', {permissions: 'assign'});
-    }),
+    _deleteUser() {
+        if (this.get('deleteUserActionIsVisible')) {
+            let user = this.get('user');
+            return user.destroyRecord();
+        }
+    },
+
+    _deleteUserSuccess() {
+        this.get('notifications').closeAlerts('user.delete');
+        this.store.unloadAll('post');
+        this.transitionToRoute('team');
+    },
+
+    _deleteUserFailure() {
+        this.get('notifications').showAlert('The user could not be deleted. Please try again.', {type: 'error', key: 'user.delete.failed'});
+    },
 
     actions: {
-        changeRole: function (newRole) {
+        changeRole(newRole) {
             this.set('model.role', newRole);
         },
 
-        save: function () {
-            var user = this.get('user'),
-                slugValue = this.get('slugValue'),
-                afterUpdateSlug = this.get('lastPromise'),
-                promise,
-                slugChanged,
-                self = this;
+        save() {
+            let user = this.get('user');
+            let slugValue = this.get('slugValue');
+            let afterUpdateSlug = this.get('lastPromise');
+            let promise,
+                slugChanged;
 
             if (user.get('slug') !== slugValue) {
                 slugChanged = true;
@@ -106,10 +121,10 @@ export default Ember.Controller.extend(ValidationEngine, {
 
             this.toggleProperty('submitting');
 
-            promise = Ember.RSVP.resolve(afterUpdateSlug).then(function () {
+            promise = RSVP.resolve(afterUpdateSlug).then(() => {
                 return user.save({format: false});
-            }).then(function (model) {
-                var currentPath,
+            }).then((model) => {
+                let currentPath,
                     newPath;
 
                 // If the user's slug has changed, change the URL and replace
@@ -124,26 +139,41 @@ export default Ember.Controller.extend(ValidationEngine, {
                     window.history.replaceState({path: newPath}, '', newPath);
                 }
 
-                self.toggleProperty('submitting');
+                this.toggleProperty('submitting');
+                this.get('notifications').closeAlerts('user.update');
 
                 return model;
-            }).catch(function (errors) {
+            }).catch((errors) => {
                 if (errors) {
-                    self.get('notifications').showErrors(errors);
+                    this.get('notifications').showErrors(errors, {key: 'user.update'});
                 }
 
-                self.toggleProperty('submitting');
+                this.toggleProperty('submitting');
             });
 
             this.set('lastPromise', promise);
+            return promise;
         },
 
-        password: function () {
-            var user = this.get('user'),
-                self = this;
+        deleteUser() {
+            return this._deleteUser().then(() => {
+                this._deleteUserSuccess();
+            }, () => {
+                this._deleteUserFailure();
+            });
+        },
+
+        toggleDeleteUserModal() {
+            if (this.get('deleteUserActionIsVisible')) {
+                this.toggleProperty('showDeleteUserModal');
+            }
+        },
+
+        password() {
+            let user = this.get('user');
 
             if (user.get('isPasswordValid')) {
-                user.saveNewPassword().then(function (model) {
+                user.saveNewPassword().then((model) => {
                     // Clear properties from view
                     user.setProperties({
                         password: '',
@@ -151,38 +181,36 @@ export default Ember.Controller.extend(ValidationEngine, {
                         ne2Password: ''
                     });
 
-                    self.get('notifications').showAlert('Password updated.', {type: 'success'});
+                    this.get('notifications').showAlert('Password updated.', {type: 'success', key: 'user.change-password.success'});
 
                     return model;
-                }).catch(function (errors) {
-                    self.get('notifications').showAPIError(errors);
+                }).catch((errors) => {
+                    this.get('notifications').showAPIError(errors, {key: 'user.change-password'});
                 });
             } else {
                 // TODO: switch to in-line validation
-                self.get('notifications').showErrors(user.get('passwordValidationErrors'));
+                this.get('notifications').showErrors(user.get('passwordValidationErrors'), {key: 'user.change-password'});
             }
         },
 
-        updateSlug: function (newSlug) {
-            var self = this,
-                afterSave = this.get('lastPromise'),
-                promise;
+        updateSlug(newSlug) {
+            let afterSave = this.get('lastPromise');
+            let promise;
 
-            promise = Ember.RSVP.resolve(afterSave).then(function () {
-                var slug = self.get('model.slug');
+            promise = RSVP.resolve(afterSave).then(() => {
+                let slug = this.get('model.slug');
 
                 newSlug = newSlug || slug;
-
                 newSlug = newSlug.trim();
 
                 // Ignore unchanged slugs or candidate slugs that are empty
                 if (!newSlug || slug === newSlug) {
-                    self.set('slugValue', slug);
+                    this.set('slugValue', slug);
 
                     return;
                 }
 
-                return self.get('slugGenerator').generateSlug(newSlug).then(function (serverSlug) {
+                return this.get('slugGenerator').generateSlug('user', newSlug).then((serverSlug) => {
                     // If after getting the sanitized and unique slug back from the API
                     // we end up with a slug that matches the existing slug, abort the change
                     if (serverSlug === slug) {
@@ -196,24 +224,202 @@ export default Ember.Controller.extend(ValidationEngine, {
                     // the trailing incrementor (e.g., this-is-a-slug and this-is-a-slug-2)
 
                     // get the last token out of the slug candidate and see if it's a number
-                    var slugTokens = serverSlug.split('-'),
-                        check = Number(slugTokens.pop());
+                    let slugTokens = serverSlug.split('-');
+                    let check = Number(slugTokens.pop());
 
                     // if the candidate slug is the same as the existing slug except
                     // for the incrementor then the existing slug should be used
                     if (isNumber(check) && check > 0) {
                         if (slug === slugTokens.join('-') && serverSlug !== newSlug) {
-                            self.set('slugValue', slug);
+                            this.set('slugValue', slug);
 
                             return;
                         }
                     }
 
-                    self.set('slugValue', serverSlug);
+                    this.set('slugValue', serverSlug);
                 });
             });
 
             this.set('lastPromise', promise);
+        },
+
+        validateFacebookUrl() {
+            let newUrl = this.get('_scratchFacebook');
+            let oldUrl = this.get('user.facebook');
+            let errMessage = '';
+
+            if (newUrl === '') {
+                // Clear out the Facebook url
+                this.set('user.facebook', '');
+                this.get('user.errors').remove('facebook');
+                return;
+            }
+
+            // _scratchFacebook will be null unless the user has input something
+            if (!newUrl) {
+                newUrl = oldUrl;
+            }
+
+            // If new url didn't change, exit
+            if (newUrl === oldUrl) {
+                this.get('user.errors').remove('facebook');
+                return;
+            }
+
+            // TODO: put the validation here into a validator
+            if (newUrl.match(/(?:facebook\.com\/)(\S+)/) || newUrl.match(/([a-z\d\.]+)/i)) {
+                let username = [];
+
+                if (newUrl.match(/(?:facebook\.com\/)(\S+)/)) {
+                    [ , username ] = newUrl.match(/(?:facebook\.com\/)(\S+)/);
+                } else {
+                    [ , username ] = newUrl.match(/(?:https\:\/\/|http\:\/\/)?(?:www\.)?(?:\w+\.\w+\/+)?(\S+)/mi);
+                }
+
+                // check if we have a /page/username or without
+                if (username.match(/^(?:\/)?(pages?\/\S+)/mi)) {
+                    // we got a page url, now save the username without the / in the beginning
+
+                    [ , username ] = username.match(/^(?:\/)?(pages?\/\S+)/mi);
+                } else if (username.match(/^(http|www)|(\/)/) || !username.match(/^([a-z\d\.]{5,50})$/mi)) {
+                    errMessage = !username.match(/^([a-z\d\.]{5,50})$/mi) ? 'Your Username is not a valid Facebook Username' : 'The URL must be in a format like https://www.facebook.com/yourUsername';
+
+                    this.get('user.errors').add('facebook', errMessage);
+                    this.get('user.hasValidated').pushObject('facebook');
+                    return;
+                }
+
+                newUrl = `https://www.facebook.com/${username}`;
+                this.set('user.facebook', newUrl);
+
+                this.get('user.errors').remove('facebook');
+                this.get('user.hasValidated').pushObject('facebook');
+
+                // User input is validated
+                invoke(this, 'save').then(() => {
+                    // necessary to update the value in the input field
+                    this.set('user.facebook', '');
+                    run.schedule('afterRender', this, function () {
+                        this.set('user.facebook', newUrl);
+                    });
+                });
+            } else {
+                errMessage = 'The URL must be in a format like ' +
+                    'https://www.facebook.com/yourUsername';
+                this.get('user.errors').add('facebook', errMessage);
+                this.get('user.hasValidated').pushObject('facebook');
+                return;
+            }
+        },
+
+        validateTwitterUrl() {
+            let newUrl = this.get('_scratchTwitter');
+            let oldUrl = this.get('user.twitter');
+            let errMessage = '';
+
+            if (newUrl === '') {
+                // Clear out the Twitter url
+                this.set('user.twitter', '');
+                this.get('user.errors').remove('twitter');
+                return;
+            }
+
+            // _scratchTwitter will be null unless the user has input something
+            if (!newUrl) {
+                newUrl = oldUrl;
+            }
+
+            // If new url didn't change, exit
+            if (newUrl === oldUrl) {
+                this.get('user.errors').remove('twitter');
+                return;
+            }
+
+            // TODO: put the validation here into a validator
+            if (newUrl.match(/(?:twitter\.com\/)(\S+)/) || newUrl.match(/([a-z\d\.]+)/i)) {
+                let username = [];
+
+                if (newUrl.match(/(?:twitter\.com\/)(\S+)/)) {
+                    [ , username] = newUrl.match(/(?:twitter\.com\/)(\S+)/);
+                } else {
+                    [username] = newUrl.match(/([^/]+)\/?$/mi);
+                }
+
+                // check if username starts with http or www and show error if so
+                if (username.match(/^(http|www)|(\/)/) || !username.match(/^[a-z\d\.\_]{1,15}$/mi)) {
+                    errMessage = !username.match(/^[a-z\d\.\_]{1,15}$/mi) ? 'Your Username is not a valid Twitter Username' : 'The URL must be in a format like https://twitter.com/yourUsername';
+
+                    this.get('user.errors').add('twitter', errMessage);
+                    this.get('user.hasValidated').pushObject('twitter');
+                    return;
+                }
+
+                newUrl = `https://twitter.com/${username}`;
+                this.set('user.twitter', newUrl);
+
+                this.get('user.errors').remove('twitter');
+                this.get('user.hasValidated').pushObject('twitter');
+
+                // User input is validated
+                invoke(this, 'save').then(() => {
+                    // necessary to update the value in the input field
+                    this.set('user.twitter', '');
+                    run.schedule('afterRender', this, function () {
+                        this.set('user.twitter', newUrl);
+                    });
+                });
+            } else {
+                errMessage = 'The URL must be in a format like ' +
+                    'https://twitter.com/yourUsername';
+                this.get('user.errors').add('twitter', errMessage);
+                this.get('user.hasValidated').pushObject('twitter');
+                return;
+            }
+        },
+
+        transferOwnership() {
+            let user = this.get('user');
+            let url = this.get('ghostPaths.url').api('users', 'owner');
+
+            this.get('dropdown').closeDropdowns();
+
+            return this.get('ajax').put(url, {
+                data: {
+                    owner: [{
+                        id: user.get('id')
+                    }]
+                }
+            }).then((response) => {
+                // manually update the roles for the users that just changed roles
+                // because store.pushPayload is not working with embedded relations
+                if (response && isArray(response.users)) {
+                    response.users.forEach((userJSON) => {
+                        let user = this.store.peekRecord('user', userJSON.id);
+                        let role = this.store.peekRecord('role', userJSON.roles[0].id);
+
+                        user.set('role', role);
+                    });
+                }
+
+                this.get('notifications').showAlert(`Ownership successfully transferred to ${user.get('name')}`, {type: 'success', key: 'owner.transfer.success'});
+            }).catch((error) => {
+                this.get('notifications').showAPIError(error, {key: 'owner.transfer'});
+            });
+        },
+
+        toggleTransferOwnerModal() {
+            if (this.get('canMakeOwner')) {
+                this.toggleProperty('showTransferOwnerModal');
+            }
+        },
+
+        toggleUploadCoverModal() {
+            this.toggleProperty('showUploadCoverModal');
+        },
+
+        toggleUploadImageModal() {
+            this.toggleProperty('showUploadImageModal');
         }
     }
 });

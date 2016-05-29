@@ -28,7 +28,7 @@
             <fieldset>
                 <div class="form-group">
                     <label>Delete all Content</label>
-                    <button type="button" class="btn btn-red js-delete" {{action "openModal" "deleteAll"}}>Delete</button>
+                    <button type="button" class="btn btn-red js-delete" {{action "toggleDeleteAllModal"}}>Delete</button>
                     <p>Delete all posts and tags from the database.</p>
                 </div>
             </fieldset>
@@ -42,5 +42,25 @@
                 </div>
             </fieldset>
         </form>
+        <hr>
+        <form>
+            <fieldset>
+                <div class="form-group for-checkbox">
+                    <h3>Enable Beta Features</h3>
+                    {{#gh-feature-flag "publicAPI"}}
+                        Public API - For full instructions, read the <a href="http://support.ghost.org/public-api-beta/">developer guide</a>.
+                    {{/gh-feature-flag}}
+                    {{#gh-feature-flag "subscribers"}}
+                        Subscribers - Allow visitors to subscribe to e-mail updates of your new posts
+                    {{/gh-feature-flag}}
+                </div>
+            </fieldset>
+        </form>
     </section>
 </section>
+
+{{#if showDeleteAllModal}}
+    {{gh-fullscreen-modal "delete-all"
+                          close=(action "toggleDeleteAllModal")
+                          modifier="action wide"}}
+{{/if}}
