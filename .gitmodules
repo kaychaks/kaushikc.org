@@ -4,4 +4,4 @@
 
 [submodule "content/themes/Vapor"]
 	path = content/themes/Vapor
-	url=git://github.com/kaychaks/Vapor.git
+url=https://github.com/kaychaks/Vapor.git
