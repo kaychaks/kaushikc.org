@@ -130,7 +130,8 @@ generateFeed = function generateFeed(data) {
         ttl: '60',
         custom_namespaces: {
             content: 'http://purl.org/rss/1.0/modules/content/',
-            media: 'http://search.yahoo.com/mrss/'
+            media: 'http://search.yahoo.com/mrss/',
+            atom: 'http://www.w3.org/2005/Atom/'
         }
     });
 
@@ -138,16 +139,55 @@ generateFeed = function generateFeed(data) {
         var itemUrl = config.urlFor('post', {post: post, secure: data.secure}, true),
             htmlContent = processUrls(post.html, data.siteUrl, itemUrl),
             item = {
-                title: post.title,
+                title: post.meta_title || post.title,
                 description: post.meta_description || downsize(htmlContent.html(), {words: 50}),
                 guid: post.uuid,
-                url: itemUrl,
+                //url: itemUrl,
                 date: post.published_at,
                 categories: _.pluck(post.tags, 'name'),
                 author: post.author ? post.author.name : null,
                 custom_elements: []
             },
             imageUrl;
+
+        if (_.contains(item.categories,'linkedlist')) {
+            var re = new RegExp(/\[([^\[]+)\]\(([^\)]+)\)/);
+            var match = re.exec(post.title);
+            item.url = match[2];
+            item.custom_elements.push({
+                'atom:link': {
+                    _attr : {
+                        href: match[2],
+                        rel: 'alternate',
+                        type: 'text/html'
+                    }
+                }
+            });
+            item.custom_elements.push(
+                {
+                    'atom:link': {
+                        _attr : {
+                            href: itemUrl,
+                            rel: 'related',
+                            type: 'text/html'
+                        }
+                    }
+                }
+            );
+        }else {
+            item.url = itemUrl;
+            item.custom_elements.push(
+                {
+                    'atom:link': {
+                        _attr : {
+                            href: itemUrl,
+                            rel: 'alternate',
+                            type: 'text/html'
+                        }
+                    }
+                }
+            );
+        }
 
         if (post.image) {
             imageUrl = config.urlFor('image', {image: post.image, secure: data.secure}, true);
