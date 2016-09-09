@@ -1,3 +1,7 @@
 [submodule "content/themes/Vapor"]
 	path = content/themes/Vapor
 	url = https://github.com/kaychaks/Vapor.git
+[submodule "core/client"]
+	path = core/client
+	url = https://github.com/TryGhost/Ghost-Admin.git
+
