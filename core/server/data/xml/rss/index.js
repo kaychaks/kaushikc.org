@@ -121,8 +121,9 @@ generateFeed = function generateFeed(data) {
             },
             imageUrl;
 
-        if (_.contains(item.categories,'linkedlist')) {
-            var re = new RegExp(/\[([^\[]+)\]\(([^\)]+)\)/);
+        //if (_.contains(item.categories,'linkedlist')) {
+         if (item.categories.includes('linkedlist')) {
+	   var re = new RegExp(/\[([^\[]+)\]\(([^\)]+)\)/);
             var match = re.exec(post.title);
             item.url = match[2];
             item.custom_elements.push({
